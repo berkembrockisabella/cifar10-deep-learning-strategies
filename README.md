@@ -1,6 +1,6 @@
 # CIFAR-10 Classification — Atividade Prática 1
 
-Comparação de cinco estratégias de classificação de imagens no dataset CIFAR-10 (10 classes, 60 000 imagens 32×32), desenvolvida como Atividade Prática 1 da disciplina de Treinamento de Modelos Profundos.
+Comparação de cinco estratégias de classificação de imagens no dataset CIFAR-10 (10 classes, 60 000 imagens 32×32).
 
 ## Estrutura do repositório
 
