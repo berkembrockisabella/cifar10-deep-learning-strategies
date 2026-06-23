@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import cv2
 import tensorflow as tf
-import tensorflow_hub as hub
 
 from tensorflow.keras.datasets import cifar10
 from tensorflow.keras.utils import to_categorical
@@ -27,6 +26,7 @@ from tensorflow.keras.applications.resnet50 import preprocess_input as preproces
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+from vit_keras import vit as vit_lib
 
 os.environ.setdefault('DML_VISIBLE_DEVICES', '0')
 
@@ -41,9 +41,8 @@ os.makedirs(FIGURES_DIR, exist_ok=True)
 CSV_PATH = os.path.join(RESULTS_DIR, 'resultados.csv')
 
 
-# =============================================================================
-# Registro de resultados em CSV
-# =============================================================================
+# ── Registro de resultados ────────────────────────────────────────────────────
+
 def inicializar_csv():
     with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -56,21 +55,20 @@ def inicializar_csv():
 
 def registrar_resultado(estrategia, variante, y_true, y_pred):
     from sklearn.metrics import precision_recall_fscore_support
-    p, r, f, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
+    p, r, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
     acc = accuracy_score(y_true, y_pred)
-    with open(CSV_PATH, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
+    with open(CSV_PATH, 'a', newline='', encoding='utf-8') as fout:
+        writer = csv.writer(fout)
         writer.writerow([
             estrategia, variante,
-            f'{acc*100:.2f}', f'{p*100:.2f}', f'{r*100:.2f}', f'{f*100:.2f}',
+            f'{acc*100:.2f}', f'{p*100:.2f}', f'{r*100:.2f}', f'{f1*100:.2f}',
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
     return acc
 
 
-# =============================================================================
-# Funções auxiliares
-# =============================================================================
+# ── Funções auxiliares ────────────────────────────────────────────────────────
+
 def plot_cm(y_true, y_pred, titulo):
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(10, 8))
@@ -103,9 +101,8 @@ def liberar_memoria(*objetos):
     tf.keras.backend.clear_session()
 
 
-# =============================================================================
-# Carregamento do CIFAR-10
-# =============================================================================
+# ── Carregamento do CIFAR-10 ──────────────────────────────────────────────────
+
 print('=' * 60)
 print('Carregando CIFAR-10...')
 print('=' * 60)
@@ -120,6 +117,10 @@ y_test_cat  = to_categorical(y_test,  10)
 
 print(f'Treino : {X_train_raw.shape}')
 print(f'Teste  : {X_test_raw.shape}')
+
+# Redimensiona para 96x96 para uso com backbones pré-treinados
+X_train_96 = resize_uint8(X_train_raw, 96)
+X_test_96  = resize_uint8(X_test_raw,  96)
 
 inicializar_csv()
 
@@ -180,35 +181,25 @@ liberar_memoria(model_s1)
 
 
 # =============================================================================
-# Estratégia 2 — Extração de características + classificador raso
-# Questão 2a: MobileNetV2 (leve) vs ResNet50 (pesada)
+# Estratégia 2 — Extração de características com MLP
 # =============================================================================
 print('\n' + '=' * 60)
 print('Estratégia 2 — Extração de características')
 print('=' * 60)
 
-X_train_96 = resize_uint8(X_train_raw, 96)
-X_test_96  = resize_uint8(X_test_raw,  96)
-print(f'Shape uint8 treino: {X_train_96.shape} | RAM: {X_train_96.nbytes / 1e6:.0f} MB')
-
-
 def extrair_features(model_fn, preprocess_fn, X_tr96, X_te96, nome):
     X_tr = preprocess_fn(X_tr96.astype('float32'))
     X_te = preprocess_fn(X_te96.astype('float32'))
-
     extractor = model_fn(
         include_top=False, weights='imagenet', pooling='avg',
         input_tensor=Input(shape=(96, 96, 3))
     )
     extractor.trainable = False
-
     F_train = extractor.predict(X_tr, batch_size=64, verbose=1)
     F_test  = extractor.predict(X_te, batch_size=64, verbose=1)
-
     del extractor, X_tr, X_te
     gc.collect()
     tf.keras.backend.clear_session()
-
     return F_train, F_test
 
 
@@ -223,7 +214,6 @@ def classificar_features(F_train, F_test, y_train, y_test, nome):
     )
     gs.fit(F_train, y_train)
     print(f'{nome} — melhores parâmetros: {gs.best_params_}')
-
     y_pred = gs.best_estimator_.predict(F_test)
     acc = registrar_resultado('Estratégia 2', nome, y_test, y_pred)
     print(f'{nome} — acurácia no teste: {acc*100:.2f}%')
@@ -234,21 +224,14 @@ def classificar_features(F_train, F_test, y_train, y_test, nome):
 
 F_train_mob, F_test_mob = extrair_features(MobileNetV2, preprocess_mob, X_train_96, X_test_96, 'MobileNetV2')
 F_train_res, F_test_res = extrair_features(ResNet50,    preprocess_res, X_train_96, X_test_96, 'ResNet50')
-
 acc_mob = classificar_features(F_train_mob, F_test_mob, y_train, y_test, 'MobileNetV2')
 acc_res = classificar_features(F_train_res, F_test_res, y_train, y_test, 'ResNet50')
-
-print(f'\nMobileNetV2 : {acc_mob*100:.2f}%')
-print(f'ResNet50    : {acc_res*100:.2f}%')
-print(f'Diferença   : {abs(acc_res - acc_mob)*100:.2f} p.p.')
-
 del F_train_mob, F_test_mob, F_train_res, F_test_res
 gc.collect()
 
 
 # =============================================================================
-# Estratégia 3 — Fine-tuning da ResNet50
-# Fase 1: base congelada | Fase 2: últimas camadas descongeladas
+# Estratégia 3 — Fine-tuning ResNet50
 # =============================================================================
 print('\n' + '=' * 60)
 print('Estratégia 3 — Fine-tuning ResNet50')
@@ -271,7 +254,7 @@ model_s3 = Model(inputs=base_s3.input, outputs=out, name='FineTuning_ResNet50')
 model_s3.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
 
 print('Fase 1: treinando apenas o topo')
-h_s3_f1 = model_s3.fit(
+model_s3.fit(
     X_train_ft, y_train_cat,
     epochs=20, batch_size=64,
     validation_split=0.1,
@@ -279,14 +262,14 @@ h_s3_f1 = model_s3.fit(
     verbose=1
 )
 
+# Descongela camadas a partir do índice 140
 base_s3.trainable = True
 for layer in base_s3.layers[:140]:
     layer.trainable = False
-
 model_s3.compile(optimizer=Adam(1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
 
 print('Fase 2: fine-tuning das camadas superiores')
-h_s3_f2 = model_s3.fit(
+model_s3.fit(
     X_train_ft, y_train_cat,
     epochs=20, batch_size=32,
     validation_split=0.1,
@@ -300,30 +283,18 @@ print(f'\nEstratégia 3 — Acurácia: {acc_s3*100:.2f}%')
 print(classification_report(y_test, y_pred_s3, target_names=CLASS_NAMES))
 plot_cm(y_test, y_pred_s3, f'Estratégia 3 — Fine-Tuning ResNet50 | {acc_s3*100:.2f}%')
 
-val_acc = h_s3_f1.history['val_accuracy'] + h_s3_f2.history['val_accuracy']
-sep     = len(h_s3_f1.history['val_accuracy'])
-plt.figure(figsize=(9, 4))
-plt.plot(val_acc, label='Val Accuracy')
-plt.axvline(sep, color='red', linestyle='--', label='Início fine-tuning')
-plt.title('Estratégia 3 — Acurácia de Validação')
-plt.xlabel('Época')
-plt.legend()
-plt.tight_layout()
-plt.savefig(os.path.join(FIGURES_DIR, 'S3_curva_validacao.png'), dpi=100)
-plt.close()
-
 del X_train_ft, X_test_ft
 liberar_memoria(model_s3)
 
 
 # =============================================================================
-# Estratégia 4 — Fine-tuning com data augmentation
-# Questão 4a: Flatten vs GlobalMaxPooling2D
-# Questão 4b: Adam vs SGD
+# Estratégia 4 — Fine-tuning MobileNetV2 com variações
+# Questão 4a: Flatten vs GMP (camada de redução espacial)
+# Questão 4b: Adam vs SGD (otimizador na Fase 2)
 # Questão 4c: augmentation básica vs agressiva
 # =============================================================================
 print('\n' + '=' * 60)
-print('Estratégia 4 — Data augmentation')
+print('Estratégia 4 — Variações de pooling, otimizador e augmentation')
 print('=' * 60)
 
 X_train_da = preprocess_mob(X_train_96.astype('float32'))
@@ -333,7 +304,6 @@ aug_basica = ImageDataGenerator(
     rotation_range=15, width_shift_range=0.1, height_shift_range=0.1,
     horizontal_flip=True, zoom_range=0.1
 )
-
 aug_agressiva = ImageDataGenerator(
     rotation_range=30, width_shift_range=0.2, height_shift_range=0.2,
     horizontal_flip=True, zoom_range=0.2, shear_range=0.1,
@@ -343,11 +313,9 @@ aug_agressiva = ImageDataGenerator(
 
 def experimento_s4(pooling_tipo, optimizer_fn, aug_gen, nome):
     print(f'\n--- {nome} ---')
-
     base = MobileNetV2(weights='imagenet', include_top=False,
                        input_tensor=Input(shape=(96, 96, 3)))
     base.trainable = False
-
     x = base.output
     if pooling_tipo == 'flatten':
         x = Flatten()(x)
@@ -355,43 +323,35 @@ def experimento_s4(pooling_tipo, optimizer_fn, aug_gen, nome):
         x = GlobalMaxPooling2D()(x)
     else:
         x = GlobalAveragePooling2D()(x)
-
     x   = Dense(256, activation='relu')(x)
     x   = BatchNormalization()(x)
     x   = Dropout(0.5)(x)
     out = Dense(10, activation='softmax')(x)
-
     model = Model(inputs=base.input, outputs=out)
     model.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
 
-    model.fit(
-        aug_gen.flow(X_train_da, y_train_cat, batch_size=64),
-        epochs=15, validation_data=(X_test_da, y_test_cat),
-        callbacks=callbacks_padrao(), verbose=0
-    )
+    # Fase 1: base congelada
+    model.fit(aug_gen.flow(X_train_da, y_train_cat, batch_size=64),
+              epochs=15, validation_data=(X_test_da, y_test_cat),
+              callbacks=callbacks_padrao(), verbose=0)
 
+    # Fase 2: descongela parcialmente
     base.trainable = True
     for layer in base.layers[:100]:
         layer.trainable = False
-
     model.compile(optimizer=optimizer_fn(), loss='categorical_crossentropy', metrics=['accuracy'])
-
-    model.fit(
-        aug_gen.flow(X_train_da, y_train_cat, batch_size=32),
-        epochs=20, validation_data=(X_test_da, y_test_cat),
-        callbacks=callbacks_padrao(), verbose=0
-    )
+    model.fit(aug_gen.flow(X_train_da, y_train_cat, batch_size=32),
+              epochs=20, validation_data=(X_test_da, y_test_cat),
+              callbacks=callbacks_padrao(), verbose=0)
 
     y_pred = np.argmax(model.predict(X_test_da), axis=1)
     acc = registrar_resultado('Estratégia 4', nome, y_test, y_pred)
     print(f'Acurácia: {acc*100:.2f}%')
     print(classification_report(y_test, y_pred, target_names=CLASS_NAMES))
     plot_cm(y_test, y_pred, f'Estratégia 4 — {nome} | {acc*100:.2f}%')
-
     del model, base
     gc.collect()
     tf.keras.backend.clear_session()
-
     return acc
 
 
@@ -405,30 +365,33 @@ resultados_s4['GAP + SGD + AugBasica'] = experimento_s4(
 resultados_s4['GAP + Adam + AugAgressiva'] = experimento_s4(
     'gap', lambda: Adam(1e-5), aug_agressiva, 'GAP + Adam + AugAgressiva')
 
-print('\nResumo Estratégia 4:')
-for nome, acc in resultados_s4.items():
-    print(f'  {nome}: {acc*100:.2f}%')
-
 del X_train_da, X_test_da
 gc.collect()
 
 
 # =============================================================================
-# Estratégia 5 — Fine-tuning EfficientNetV2B0 (bônus)
+# Estratégia 5 — Fine-tuning ViT-B16 (bônus)
+# Pesos pré-treinados no ImageNet-21k via vit-keras.
+# Instalação: pip install vit-keras
 # =============================================================================
 print('\n' + '=' * 60)
-print('Estratégia 5 — Fine-tuning EfficientNetV2B0 (bônus)')
+print('Estratégia 5 — Fine-tuning ViT-B16 (bônus)')
 print('=' * 60)
 
-from tensorflow.keras.applications import EfficientNetV2B0
-from tensorflow.keras.applications.efficientnet_v2 import preprocess_input as preprocess_eff
+IMAGE_SIZE_VIT = 96
 
-X_train_vit = preprocess_eff(X_train_96.astype('float32'))
-X_test_vit  = preprocess_eff(X_test_96.astype('float32'))
+# Normalização para [-1, 1] conforme esperado pelo ViT
+X_train_vit = (X_train_96.astype('float32') / 127.5) - 1.0
+X_test_vit  = (X_test_96.astype('float32')  / 127.5) - 1.0
 
-base_vit = EfficientNetV2B0(
-    weights='imagenet', include_top=False, pooling='avg',
-    input_tensor=Input(shape=(96, 96, 3))
+print(f'Treino S5: {X_train_vit.shape} | RAM: {X_train_vit.nbytes / 1e9:.1f} GB')
+
+# Fase 1: base congelada, topo treinável
+base_vit = vit_lib.vit_b16(
+    image_size=IMAGE_SIZE_VIT,
+    pretrained=True,
+    include_top=False,
+    pretrained_top=False,
 )
 base_vit.trainable = False
 
@@ -437,8 +400,12 @@ x   = Dense(256, activation='relu')(x)
 x   = Dropout(0.3)(x)
 out = Dense(10, activation='softmax')(x)
 
-model_vit = Model(inputs=base_vit.input, outputs=out, name='EfficientNetV2B0')
-model_vit.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
+model_vit = Model(inputs=base_vit.input, outputs=out, name='ViT_B16')
+model_vit.compile(
+    optimizer=Adam(1e-3),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
 
 print('Fase 1: treinando apenas o topo')
 model_vit.fit(
@@ -449,27 +416,32 @@ model_vit.fit(
     verbose=1
 )
 
+# Fase 2: descongela os últimos 20% das camadas do encoder
 base_vit.trainable = True
 freeze_until = int(len(base_vit.layers) * 0.8)
 for layer in base_vit.layers[:freeze_until]:
     layer.trainable = False
 
-model_vit.compile(optimizer=Adam(1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
+model_vit.compile(
+    optimizer=Adam(1e-5),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
 
-print('Fase 2: fine-tuning das camadas superiores')
+print('Fase 2: fine-tuning dos blocos de atenção superiores')
 model_vit.fit(
     X_train_vit, y_train_cat,
-    epochs=15, batch_size=64,
+    epochs=15, batch_size=32,
     validation_split=0.1,
     callbacks=callbacks_padrao(),
     verbose=1
 )
 
 y_pred_vit = np.argmax(model_vit.predict(X_test_vit), axis=1)
-acc_vit = registrar_resultado('Estratégia 5', 'EfficientNetV2B0', y_test, y_pred_vit)
+acc_vit = registrar_resultado('Estratégia 5', 'ViT-B16', y_test, y_pred_vit)
 print(f'\nEstratégia 5 — Acurácia: {acc_vit*100:.2f}%')
 print(classification_report(y_test, y_pred_vit, target_names=CLASS_NAMES))
-plot_cm(y_test, y_pred_vit, f'Estratégia 5 — EfficientNetV2B0 | {acc_vit*100:.2f}%')
+plot_cm(y_test, y_pred_vit, f'Estratégia 5 — ViT-B16 | {acc_vit*100:.2f}%')
 
 del X_train_vit, X_test_vit
 liberar_memoria(model_vit)
@@ -486,7 +458,7 @@ print(f'Estratégia 2  — Feature Ext. MobileNetV2 : {acc_mob*100:.2f}%')
 print(f'Estratégia 2  — Feature Ext. ResNet50    : {acc_res*100:.2f}%')
 print(f'Estratégia 3  — Fine-Tuning ResNet50     : {acc_s3*100:.2f}%')
 for nome, acc in resultados_s4.items():
-    print(f'Estratégia 4  — {nome}: {acc*100:.2f}%')
-print(f'Estratégia 5  — EfficientNetV2B0 (bônus) : {acc_vit*100:.2f}%')
+    print(f'Estratégia 4  — {nome:<40}: {acc*100:.2f}%')
+print(f'Estratégia 5  — ViT-B16 (bônus)         : {acc_vit*100:.2f}%')
 print('=' * 60)
 print(f'\nResultados salvos em: {CSV_PATH}')
