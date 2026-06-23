@@ -1,0 +1,10 @@
+estrategia,variante,acuracia,precision_macro,recall_macro,f1_macro
+Estratégia 1,CNN do zero,86.19,86.0,86.0,86.0
+Estratégia 2,MobileNetV2,80.81,81.0,81.0,81.0
+Estratégia 2,ResNet50,86.84,87.0,87.0,87.0
+Estratégia 3,Fine-Tuning ResNet50,89.91,90.0,90.0,90.0
+Estratégia 4,Flatten + Adam + AugBasica,90.13,90.0,90.0,90.0
+Estratégia 4,GMP + Adam + AugBasica,90.11,90.0,90.0,90.0
+Estratégia 4,GAP + SGD + AugBasica,90.82,91.0,91.0,91.0
+Estratégia 4,GAP + Adam + AugAgressiva,89.83,90.0,90.0,90.0
+Estratégia 5,ViT-B16,75.71,75.85,75.71,75.63
